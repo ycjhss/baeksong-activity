@@ -473,13 +473,14 @@ var AK = (function () {
     if (/^(연번|순번|순|no\.?|번호\(연번\)|일련번호|#)$/i.test(t)) return 'seq';
     if (/학년.*반.*번/.test(t)) return 'gcn';
     if (/학번/.test(t)) return 'sid';
-    if (/^(이름|성명|학생명|학생이름|학생성명|성함|학생|참가자|참여자|참가학생|참여학생|대상학생)$/.test(t)) return 'name';
+    if (/^(이름|성명|학생명|학생이름|학생성명|성함|학생|참가자|참여자|참가학생|참여학생|대상학생|팀원|조원|모둠원|구성원|팀구성원|조구성원|명단|학생명단|참가자명단|참여자명단|참가학생명단|참여학생명단|참가자성명|참여자성명|수상자|입상자|선정자|이수자|대상자)(\(.*\))?$/.test(t)) return 'name';
+    if (/^(학생|팀원|조원|모둠원|참가자|참여자|이름|성명)\d{1,2}$/.test(t)) return 'name';
     if (/^학년$/.test(t)) return 'grade';
     if (/^(반|학급|학반)$/.test(t)) return 'cls';
     if (/^(번호|출석번호|번)$/.test(t)) return 'num';
     if (/(프로그램|행사명|활동명|강좌명?|동아리명|부서명?|과정명|프로젝트명|대회명|캠프명|교육명)/.test(t)) return 'program';
     if (/(일자|날짜|일시|기간|활동일|시기)/.test(t)) return 'date';
-    if (/(서명|확인란|연락처|전화|생년월일|성별|이메일|출결|시수|시간$)/.test(t)) return 'ignore';
+    if (/(서명|확인란|연락처|전화|생년월일|성별|이메일|출결|시수|시간$)/.test(t) || /^(byte|bytes|바이트|글자수|자수|글자|자|문자수)(\(.*\))?$/i.test(t)) return 'ignore';
     if (/(활동|내용|소감|역할|주제|특기|세부|관찰|기록|평가|비고|참여|성과|탐구|발표|결과|의견|사항|진로|소개|느낀)/.test(t)) return 'content';
     return 'other';
   }
@@ -577,13 +578,15 @@ var AK = (function () {
     var scanName = function (i, loose) {
       var found = false;
       var whole = normName(str(cells[i]).replace(/\(.*?\)/g, '').replace(/학생$/, ''));
-      if (ix.byName[whole]) { nameHits.push({ name: whole, i: i, whole: true }); return true; }
-      tokensOf(cells[i]).forEach(function (tk) {
+      if (ix.byName[whole]) { nameHits.push({ name: whole, i: i, whole: true, strong: true }); return true; }
+      var tks = tokensOf(cells[i]), isNameCol = nameCols.indexOf(i) >= 0;
+      tks.forEach(function (tk, ti) {
         if (!/^[가-힣]{2,5}$/.test(tk) && !/^[A-Za-z]{2,20}$/.test(tk)) return;
-        if (ix.byName[tk]) { nameHits.push({ name: tk, i: i }); found = true; return; }
+        var strong = isNameCol || tks.length <= 3 || ti <= 1 || (ti > 0 && /^\d{4,6}$/.test(tks[ti - 1]));
+        if (ix.byName[tk]) { nameHits.push({ name: tk, i: i, strong: strong }); found = true; return; }
         if (loose) {
           var cut = tk.replace(PARTICLES, '');
-          if (cut !== tk && cut.length >= 2 && ix.byName[cut]) { nameHits.push({ name: cut, i: i }); found = true; }
+          if (cut !== tk && cut.length >= 2 && ix.byName[cut]) { nameHits.push({ name: cut, i: i, strong: strong }); found = true; }
         }
       });
       return found;
@@ -598,7 +601,17 @@ var AK = (function () {
     });
     if (nameHits.length) res.nameToken = nameHits[0].name;
 
-    var uniqNames = []; nameHits.forEach(function (h) { if (uniqNames.indexOf(h.name) < 0) uniqNames.push(h.name); });
+    var uniqNames = [], strongNames = [];
+    nameHits.forEach(function (h) { if (uniqNames.indexOf(h.name) < 0) uniqNames.push(h.name); if (h.strong && strongNames.indexOf(h.name) < 0) strongNames.push(h.name); });
+    // 학번(또는 학년·반·번호)과 이름이 서로 다른 학생을 가리킬 때: 어느 쪽이 맞는지 직접 고르도록 후보를 함께 보여 줌
+    var conflict = function (s) {
+      if (!strongNames.length || strongNames.indexOf(normName(s.name)) >= 0) return false;
+      res.status = 'mismatch';
+      var opts = [s]; strongNames.forEach(function (nm) { (ix.byName[nm] || []).forEach(function (x) { if (opts.indexOf(x) < 0) opts.push(x); }); });
+      res.options = opts;
+      res.hint = (res.how === 'sid' ? '학번(' + (res.sidToken || s.sid) + ')은 ' : '학년·반·번호는 ') + s.name + ', 문서 이름은 ' + strongNames.join(', ');
+      return true;
+    };
     if (!sidHits.length && weakSid.length) {
       weakSid.forEach(function (w) {
         if (uniqNames.indexOf(normName(w.s.name)) >= 0) { sidHits.push(w); res.sidToken = res.sidToken || w.tk; if (tokensOf(cells[w.i]).length <= 2) res.idCells[w.i] = 1; }
@@ -609,12 +622,12 @@ var AK = (function () {
     if (sidHits.length) {
       var s0 = sidHits[0].s;
       pick(s0, 'sid');
-      if (uniqNames.length && uniqNames.indexOf(normName(s0.name)) < 0) { res.status = 'mismatch'; res.hint = '문서의 이름: ' + uniqNames.join(', '); }
+      conflict(s0);
       return res;
     }
     if (gcnHit) {
       pick(gcnHit, 'gcn');
-      if (uniqNames.length && uniqNames.indexOf(normName(gcnHit.name)) < 0) { res.status = 'mismatch'; res.hint = '문서의 이름: ' + uniqNames.join(', '); }
+      conflict(gcnHit);
       return res;
     }
     if (uniqNames.length) {
@@ -624,7 +637,7 @@ var AK = (function () {
       if (gradeHint) { var f1 = f.filter(function (s) { return n(s.grade) === gradeHint; }); if (f1.length) f = f1; }
       if (clsHint) { var f2 = f.filter(function (s) { return n(s.cls) === clsHint; }); if (f2.length) f = f2; }
       if (nv && f.length > 1) { var f3 = f.filter(function (s) { return n(s.num) === nv; }); if (f3.length) f = f3; }
-      if (f.length === 1) { pick(f[0], 'name'); return res; }
+      if (f.length === 1) { pick(f[0], 'name'); if (unknownSid) res.hint = '명렬표에 없는 학번 ' + unknownSid + ' (이름으로 찾음)'; return res; }
       res.status = 'ambiguous'; res.options = f; res.hint = '동명이인 ' + f.length + '명';
       return res;
     }
@@ -635,6 +648,172 @@ var AK = (function () {
       if (/^[가-힣]{2,5}$/.test(raw.replace(/\s/g, ''))) { res.status = 'unknown'; res.hint = '명렬표에 없는 이름 ' + raw; return res; }
     }
     return res;
+  }
+
+  // ── 한 줄에 학생이 여러 명일 때 ──
+  var FILLER = /^(학생|학년|반|번|조|팀|모둠|외|명|등|및|총|인원|팀장|조장|부장|차장|회장|부회장|리더|대표|팀원|조원|모둠원|구성원|참가자|참여자|참가|참여|명단|대상|대상자|수상자|입상자|이수자|선정자|학번|이름|성명|씨)$/;
+  var SURNAME = '김이박최정강조윤장임한오서신권황안송류유전홍고문양손배백허남심노하곽성차주우구민진나지엄채원천방공현함변염여추도석선설마길연위표명기반왕금옥육인맹제모탁국어은편용예봉경소사부가복태목형피두감음빈동온호범좌시곡엽';
+  // 칸(글)에서 학생들을 차례로 뽑기: "20301 김하늘, 20302 이도윤" / "김하늘(2301)·이도윤(2302)" / "김하늘, 이도윤"
+  function personsFrom(text, ix, inIdCol) {
+    var t = str(text)
+      .replace(/\(([^)0-9]*)\)/g, ' ')
+      .replace(/([1-3])\s*학년\s*(\d{1,2})\s*반\s*(\d{1,2})\s*번?/g, function (m, g, c, k) { return ' ' + g + ('0' + c).slice(-2) + ('0' + k).slice(-2) + ' '; })
+      .replace(/(^|[^\d-])([1-3])\s*-\s*(\d{1,2})\s*-\s*(\d{1,2})(?![\d-])/g, function (m, pre, g, c, k) { return pre + ' ' + g + ('0' + c).slice(-2) + ('0' + k).slice(-2) + ' '; });
+    var toks = t.match(/[0-9]+|[가-힣]+|[A-Za-z]+/g) || [];
+    var out = [], cur = null, pure = true;
+    toks.forEach(function (tk) {
+      if (/^\d+$/.test(tk)) {
+        if (/^\d{4,6}$/.test(tk) && (lookupSid(tk, ix) || sidParts(tk))) {
+          if (!cur || cur.sid) { cur = { sid: tk, name: '' }; out.push(cur); } else cur.sid = tk;
+        } else if (tk.length > 3) pure = false;
+        return;
+      }
+      if (/^[A-Za-z]+$/.test(tk)) { pure = false; return; }
+      var nm = ix.byName[tk] ? tk : '';
+      if (!nm) { var cut = tk.replace(PARTICLES, ''); if (cut !== tk && cut.length >= 2 && ix.byName[cut]) nm = cut; }
+      if (!nm && FILLER.test(tk)) return;
+      if (!nm) {
+        // 명렬표에 없는 이름: 학생 열 안에서, 성씨로 시작하는 2~4글자만 사람으로 봄
+        if (inIdCol && /^[가-힣]{2,4}$/.test(tk) && SURNAME.indexOf(tk[0]) >= 0) nm = tk;
+        else { pure = false; return; }
+      }
+      if (!cur || cur.name) { cur = { sid: '', name: nm }; out.push(cur); } else cur.name = nm;
+    });
+    return { persons: out, pure: pure };
+  }
+  function resolvePerson(p, ix, ctx) {
+    var s = p.sid ? lookupSid(p.sid, ix) : null;
+    var cands = p.name ? (ix.byName[p.name] || []) : [];
+    var r = { status: 'ok', student: null, options: [], hint: '', strip: [p.sid, p.name] };
+    if (s) {
+      if (p.name && cands.length && normName(s.name) !== p.name) {
+        r.status = 'mismatch'; r.options = [s].concat(cands.filter(function (x) { return x !== s; }));
+        r.hint = '학번(' + p.sid + ')은 ' + s.name + ', 문서 이름은 ' + p.name;
+      } else { r.student = s; if (p.name && !cands.length) r.hint = '문서의 이름: ' + p.name; }
+      return r;
+    }
+    if (cands.length) {
+      var f = cands, sp = p.sid ? sidParts(p.sid) : null;
+      var g = sp ? sp.g : (ctx && ctx.grade) || '', c = sp ? sp.c : (ctx && ctx.cls) || '';
+      if (g) { var f1 = f.filter(function (x) { return n(x.grade) === g; }); if (f1.length) f = f1; }
+      if (c) { var f2 = f.filter(function (x) { return n(x.cls) === c; }); if (f2.length) f = f2; }
+      if (f.length === 1) { r.student = f[0]; if (p.sid) r.hint = '명렬표에 없는 학번 ' + p.sid + ' (이름으로 찾음)'; }
+      else { r.status = 'ambiguous'; r.options = f; r.hint = '동명이인 ' + f.length + '명'; }
+      return r;
+    }
+    r.status = 'unknown';
+    r.hint = p.name ? '명렬표에 없는 이름 ' + p.name + (p.sid ? ' (' + p.sid + ')' : '') : '명렬표에 없는 학번 ' + p.sid;
+    return r;
+  }
+  // 학생이 2명 이상이면 학생별 결과 목록, 아니면 null
+  function multiStudents(cells, ix, roles, ctx) {
+    var hasIdCol = roles && roles.some(function (r) { return r === 'sid' || r === 'name' || r === 'gcn'; });
+    var persons = [], used = [];
+    if (hasIdCol) {
+      var idCols = [];
+      roles.forEach(function (r, i) { if ((r === 'sid' || r === 'name' || r === 'gcn') && normCell(cells[i])) idCols.push(i); });
+      var lists = idCols.map(function (i) { return personsFrom(cells[i], ix, true).persons; });
+      var zipOk = lists.length === 2 && lists[0].length >= 2 && lists[0].length === lists[1].length
+        && lists[0].every(function (p) { return p.sid && !p.name; }) && lists[1].every(function (p) { return p.name && !p.sid; });
+      if (zipOk) persons = lists[0].map(function (p, k) { return { sid: p.sid, name: lists[1][k].name }; });
+      else persons = personsFrom(idCols.map(function (i) { return cells[i]; }).join(' '), ix, true).persons;
+      used = idCols;
+    } else {
+      var txt = [];
+      cells.forEach(function (c, i) { if (!normCell(c)) return; var r = personsFrom(c, ix, false); if (r.pure && r.persons.length) { txt.push(c); used.push(i); } });
+      persons = personsFrom(txt.join(' '), ix, false).persons;
+    }
+    if (persons.length < 2) return null;
+    var out = [], seen = {};
+    persons.forEach(function (p) {
+      var r = resolvePerson(p, ix, ctx);
+      var key = r.student ? 's:' + r.student.sid : 'p:' + p.sid + '|' + p.name;
+      if (seen[key]) return; seen[key] = 1;
+      out.push(r);
+    });
+    if (out.length < 2) return null;
+    if (!hasIdCol && out.filter(function (r) { return r.student; }).length < 2) return null;
+    return { list: out, used: used };
+  }
+  // 머리글이 "번호|학번|이름|번호|학번|이름"처럼 되풀이되면 학생 한 명씩 나눌 칸 묶음
+  function blockLayout(roles) {
+    if (!roles) return null;
+    var cnt = function (r) { return roles.filter(function (x) { return x === r; }).length; };
+    var anchor = ['sid', 'gcn', 'name'].filter(function (r) { return cnt(r) >= 2; })[0];
+    if (!anchor) return null;
+    var a = []; roles.forEach(function (r, i) { if (r === anchor) a.push(i); });
+    var ID = { seq: 1, sid: 1, name: 1, grade: 1, cls: 1, num: 1, gcn: 1 };
+    var p = a[1] - a[0], lead = 0;
+    while (a[0] - lead - 1 >= 0 && ID[roles[a[0] - lead - 1]] && roles[a[0] - lead - 1] !== anchor && lead + 1 < p) lead++;
+    var blocks = a.map(function (x, k) { var st = x - lead; var en = k + 1 < a.length ? a[k + 1] - lead - 1 : Math.min(roles.length - 1, st + p - 1); return [st, en]; });
+    var of = function (i) { for (var k = 0; k < blocks.length; k++) if (i >= blocks[k][0] && i <= blocks[k][1]) return k; return -1; };
+    return { blocks: blocks, of: of };
+  }
+  function splitBlocks(cells, roles, layout) {
+    if (!layout) return [cells];
+    var subs = [];
+    layout.blocks.forEach(function (bk, k) {
+      var has = false;
+      for (var i = bk[0]; i <= bk[1]; i++) if ((roles[i] === 'sid' || roles[i] === 'name' || roles[i] === 'gcn') && normCell(cells[i])) has = true;
+      if (has) subs.push(cells.map(function (c, i) { var b = layout.of(i); return b >= 0 && b !== k ? '' : c; }));
+    });
+    return subs.length ? subs : [cells];
+  }
+  // 직접 찾기: "김하늘", "20301", "2301 김하늘", "김하늘 20301", "2-3-1", "2학년 3반 1번", "하늘"
+  function searchStudents(q, ix) {
+    var t = normCell(q);
+    if (!t) return [];
+    var ps = personsFrom(t, ix, true).persons, out = [];
+    var add = function (s) { if (s && out.indexOf(s) < 0) out.push(s); };
+    ps.forEach(function (p) { var r = resolvePerson(p, ix, null); if (r.student) add(r.student); else if (r.status === 'mismatch' || r.status === 'ambiguous') r.options.forEach(add); });
+    if (out.length) return out;
+    var nm = normName(t).replace(/[^가-힣A-Za-z]/g, '');
+    if (nm.length >= 2) ix.list.forEach(function (s) { if (normName(s.name).indexOf(nm) >= 0) add(s); });
+    return out;
+  }
+
+  var CHECK = /^(o|x|ㅇ|ㅁ|○|●|◯|◎|×|✕|✗|✓|✔|v|y|n|yes|no|예|아니오|아니요|유|무|참|불참|참석|불참석|미참석|제출|미제출|완료|미완료|-|–|\/)$/i;
+  // 한셀 등에서 저장한 xlsx의 확장 표시(AlternateContent)를 엑셀 기본 형태로 바꿈
+  function fixOoxml(xml) {
+    return str(xml).replace(/<(\w+):AlternateContent\b[^>]*>([\s\S]*?)<\/\1:AlternateContent>/g, function (m, p, inner) {
+      var f = inner.match(new RegExp('<' + p + ':Fallback\\b[^>]*>([\\s\\S]*?)<\\/' + p + ':Fallback>'));
+      return f ? f[1] : '';
+    });
+  }
+  // 엑셀 읽기 도구가 못 읽는 xlsx를 직접 읽기: parts = { workbook, rels, sst, sheets: { 'xl/worksheets/sheet1.xml': xml } }
+  function xlsxFromParts(parts, DP) {
+    var parse = function (x) { return new DP().parseFromString(fixOoxml(x), 'application/xml'); };
+    var byLocal = function (node, name) { var out = [], all = node.getElementsByTagName('*'); for (var i = 0; i < all.length; i++) if (all[i].localName === name) out.push(all[i]); return out; };
+    var sst = [];
+    if (parts.sst) byLocal(parse(parts.sst), 'si').forEach(function (si) {
+      var t = ''; byLocal(si, 't').forEach(function (te) { var p = te.parentNode; if (p && p.localName === 'rPh') return; t += te.textContent; }); sst.push(t);
+    });
+    var rel = {};
+    if (parts.rels) byLocal(parse(parts.rels), 'Relationship').forEach(function (r) { rel[r.getAttribute('Id')] = r.getAttribute('Target') || ''; });
+    var out = [];
+    byLocal(parse(parts.workbook), 'sheet').forEach(function (sh) {
+      var rid = ''; for (var a = 0; a < sh.attributes.length; a++) if (sh.attributes[a].localName === 'id') rid = sh.attributes[a].value;
+      var tgt = rel[rid] || '', path = tgt.charAt(0) === '/' ? tgt.slice(1) : 'xl/' + tgt.replace(/^\.\//, '');
+      var xml = parts.sheets[path];
+      if (!xml) return;
+      var rows = [];
+      byLocal(parse(xml), 'c').forEach(function (c) {
+        if (!c.parentNode || c.parentNode.localName !== 'row') return;
+        var m = (c.getAttribute('r') || '').match(/^([A-Z]+)(\d+)$/);
+        if (!m) return;
+        var col = 0; for (var i = 0; i < m[1].length; i++) col = col * 26 + (m[1].charCodeAt(i) - 64); col--;
+        var row = +m[2] - 1, t = c.getAttribute('t') || '', v = byLocal(c, 'v')[0], val = v ? v.textContent : '';
+        if (t === 's') val = sst[+val] || '';
+        else if (t === 'inlineStr') val = byLocal(c, 't').map(function (x) { return x.textContent; }).join('');
+        else if (t === 'b') val = val === '1' ? 'TRUE' : 'FALSE';
+        if (val === '') return;
+        while (rows.length <= row) rows.push([]);
+        while (rows[row].length < col) rows[row].push('');
+        rows[row][col] = val;
+      });
+      out.push({ name: sh.getAttribute('name') || 'Sheet' + (out.length + 1), rows: rows });
+    });
+    return out;
   }
 
   function contentFrom(cells, roles, labels, contentCols, idCells) {
@@ -652,7 +831,7 @@ var AK = (function () {
       var v = normCell(c);
       if (!v || (idCells && idCells[i])) return;
       var r = roles ? roles[i] : '';
-      if (r === 'seq' || r === 'ignore' || r === 'program' || r === 'date' || r === 'sid' || r === 'name' || r === 'grade' || r === 'cls' || r === 'num' || r === 'gcn') return;
+      if (r === 'seq' || r === 'ignore' || r === 'check' || r === 'program' || r === 'date' || r === 'sid' || r === 'name' || r === 'grade' || r === 'cls' || r === 'num' || r === 'gcn') return;
       if (/^\d{1,3}$/.test(v) && !roles) return;
       parts.push(v);
     });
@@ -665,6 +844,7 @@ var AK = (function () {
     for (var k = 0; k < 3; k++) t = t.replace(/\s*[\(\[]?\s*(수정본|수정|최종본|최종|재제출|제출용|v\d+|ver\.?\s*\d+|\d+차)\s*[\)\]]?\s*$/i, '');
     return normCell(t)
       .replace(/\s*(참가자|참여자|참가|참여|대상자|대상|학생)?\s*(명단|명렬표|목록|리스트|현황)\s*$/, '')
+      .replace(/\s*(자율|자치|자율\s*[·ㆍ.]?\s*자치|동아리|진로|봉사)?\s*(활동)?\s*(세부\s*능력\s*및\s*)?특기\s*사항\s*(입력|기록|작성|정리)?\s*(예시|자료|양식|명단)?\s*$/, '')
       .replace(/^\[?\s*(붙임|첨부)\s*\d*\.?\s*\]?\s*/, '').trim();
   }
   function findDate(text) {
@@ -702,18 +882,44 @@ var AK = (function () {
         var header = b.kind === 'table' ? detectHeader(rows) : null;
         var roles = header ? header.roles : null;
         var contentCols = [];
-        if (header) header.roles.forEach(function (r, i) { if (r === 'content') contentCols.push(i); });
+        if (header) {
+          // "소감문 O/X", "참석 ○"처럼 표시만 있는 열은 활동 내용이 아님
+          header.roles.forEach(function (r, i) {
+            if (r !== 'content') return;
+            var vals = rows.slice(header.index + 1).map(function (cells) { return normCell(cells[i]); }).filter(Boolean);
+            if (vals.length && vals.every(function (v) { return CHECK.test(v) || /^\d{1,4}$/.test(v); })) header.roles[i] = 'check';
+          });
+          header.roles.forEach(function (r, i) { if (r === 'content') contentCols.push(i); });
+        }
         var tinfo = header ? { id: ui + '-' + bi, labels: header.labels, roles: header.roles, contentCols: contentCols } : null;
         if (tinfo) tables.push(tinfo);
+        var layout = blockLayout(roles);
         var progCol = roles ? roles.indexOf('program') : -1;
         var dateCol = roles ? roles.indexOf('date') : -1;
         var lastProg = '';
-        rows.forEach(function (cells, ri) {
-          if (header && ri < header.index) { var t0 = cells.filter(function (c) { return c; }).join(' '); if (t0) { if (!title && t0.length >= 3 && t0.length <= 60) title = t0; else pre.push(t0); } return; }
+        rows.forEach(function (cells0, ri) {
+          if (header && ri < header.index) { var cells = cells0; var t0 = cells.filter(function (c) { return c; }).join(' '); if (t0) { if (!title && t0.length >= 3 && t0.length <= 60) title = t0; else pre.push(t0); } return; }
           if (header && ri === header.index) { current = null; return; }
           var isText = b.kind === 'text';
-          if (isText && detectHeader([cells])) return;
+          if (isText && detectHeader([cells0])) return;
+          var prog = '';
+          if (progCol >= 0) { prog = normCell(cells0[progCol]) || lastProg; lastProg = prog; }
+          if (dateCol >= 0 && normCell(cells0[dateCol])) dates[normCell(cells0[dateCol])] = 1;
+          splitBlocks(cells0, roles, layout).forEach(function (cells) { oneRow(cells, isText, prog); });
+        });
+        function oneRow(cells, isText, prog) {
           var f = findStudent(cells, ix, roles, isText, ctx);
+          var multi = multiStudents(cells, ix, roles, ctx);
+          if (multi) {
+            // 같은 줄의 학생들은 같은 활동 내용을 함께 받음(이어지는 줄도 함께)
+            var ids = {}; Object.keys(f.idCells).forEach(function (k) { ids[k] = 1; }); multi.used.forEach(function (i) { ids[i] = 1; });
+            var shared = [{ cells: cells, idCells: ids }];
+            multi.list.forEach(function (m) {
+              var e = { status: m.status, student: m.student, options: m.options, hint: m.hint, block: bi, table: tinfo, cellsList: shared, group: prog, strip: m.strip };
+              entries.push(e); current = e;
+            });
+            return;
+          }
           var nonEmpty = cells.filter(function (c) { return normCell(c); });
           if (f.status === 'none') {
             if (!nonEmpty.length) return;
@@ -723,13 +929,10 @@ var AK = (function () {
             if (!entries.length) { var t = nonEmpty.join(' '); if (!title && t.length >= 3 && t.length <= 60 && !/^\d+$/.test(t)) title = t; else pre.push(t); }
             return;
           }
-          var prog = '';
-          if (progCol >= 0) { prog = normCell(cells[progCol]) || lastProg; lastProg = prog; }
-          if (dateCol >= 0 && normCell(cells[dateCol])) dates[normCell(cells[dateCol])] = 1;
-          var e = { status: f.status, student: f.student, options: f.options, hint: f.hint, how: f.how, block: bi, table: tinfo, cellsList: [{ cells: cells, idCells: f.idCells }], group: prog, strip: [f.sidToken || '', f.nameToken || ''] };
+          var e = { status: f.status, student: f.status === 'mismatch' ? null : f.student, options: f.options, hint: f.hint, how: f.how, block: bi, table: tinfo, cellsList: [{ cells: cells, idCells: f.idCells }], group: prog, strip: [f.sidToken || '', f.nameToken || ''] };
           entries.push(e);
           current = e;
-        });
+        }
       });
       if (!entries.length) return;
       var preText = pre.join('\n');
@@ -748,7 +951,7 @@ var AK = (function () {
         var name = g || baseName;
         var c = {
           fileName: base.fileName, label: base.label + (g ? (base.label ? ' / ' : '') + g : ''),
-          name: name, area: suggestArea(name + ' ' + (g ? '' : base.common) + ' ' + doc.fileName, areas),
+          name: name, area: suggestArea(name + ' ' + (g ? '' : title + ' ' + base.common) + ' ' + doc.fileName, areas),
           date: base.date, teacher: base.teacher, common: g ? '' : base.common,
           tables: tables, rows: [],
         };
@@ -763,7 +966,7 @@ var AK = (function () {
             if (!(n(s.grade) === scope.grade && n(s.cls) === scope.cls)) { row.status = 'other'; row.hint = n(s.grade) + '학년 ' + n(s.cls) + '반 학생'; }
           }
           row.content = rowContent(row);
-          row.include = row.status === 'ok' || row.status === 'mismatch';
+          row.include = row.status === 'ok' && !!row.sid;
           c.rows.push(row);
         });
         cands.push(c);
@@ -916,7 +1119,7 @@ var AK = (function () {
     normBirth: normBirth, normPhone: normPhone,
     htmlToBlocks: htmlToBlocks, textToBlocks: textToBlocks, hwpxSectionToBlocks: hwpxSectionToBlocks, hwpToBlocks: hwpToBlocks, pdfItemsToRows: pdfItemsToRows,
     buildIndex: buildIndex, headerRole: headerRole, detectHeader: detectHeader, suggestArea: suggestArea,
-    findStudent: findStudent, contentFrom: contentFrom, stripIdentity: stripIdentity, analyze: analyze, rowContent: rowContent, mergeRecords: mergeRecords,
+    fixOoxml: fixOoxml, xlsxFromParts: xlsxFromParts, findStudent: findStudent, personsFrom: personsFrom, multiStudents: multiStudents, blockLayout: blockLayout, searchStudents: searchStudents, contentFrom: contentFrom, stripIdentity: stripIdentity, analyze: analyze, rowContent: rowContent, mergeRecords: mergeRecords,
     cleanTitle: cleanTitle, sidParts: sidParts, canonSid: canonSid, lookupSid: lookupSid, findDate: findDate, findTeacher: findTeacher, parseRoster: parseRoster,
   };
 })();
@@ -1977,6 +2180,7 @@ function viewAccounts() {
   var o = S.overview;
   if (!o) return '<div class="empty">불러오는 중…</div>';
   var html = '<div class="row" style="margin-bottom:12px">' + classPicker('pickClass') + '<button class="btn sm right" data-act="rosterTemplate">⬇ 명렬표 양식</button><button class="btn sm primary" data-act="openRoster">⬆ 명렬표 올리기</button><button class="btn sm" data-act="addStudent">+ 학생 추가</button></div>'
+    + '<label class="drop" id="acctDrop" style="padding:14px;margin-bottom:12px"><input type="file" accept=".xlsx,.xls,.csv" data-change="acctPick" style="display:none"><b>📥 명렬표 엑셀 파일을 여기에 끌어다 놓으세요</b> <span class="muted small">— 바로 올리기 창이 열려요 (눌러서 선택도 가능)</span></label>'
     + '<div class="note" style="margin-bottom:12px">학생은 <b>이름 + 생년월일 6자리 + 휴대전화 뒷번호 4자리 + 비밀번호</b>로 로그인합니다(구글 계정 필요 없음). 처음에는 비밀번호 없이 본인 확인 후 특수문자를 넣은 6자 이상 비밀번호를 직접 만듭니다.</div>';
   if (!o.students.length) return html + '<div class="card empty">등록된 학생이 없습니다. 명렬표(엑셀)를 올려 주세요.</div>';
   html += '<div class="tbl-wrap"><table class="t"><thead><tr><th>번호</th><th>학번</th><th>이름</th><th>생년월일</th><th>휴대전화 뒷번호</th><th>비밀번호</th><th>최근 로그인</th><th></th></tr></thead><tbody>';
@@ -2035,7 +2239,8 @@ ACT.rosterTemplate = function () {
     XLSX.writeFile(wb, (mine ? o.grade + '학년' + o.cls + '반_' : '') + '명렬표_입력양식.xlsx');
   }).catch(fail);
 };
-ACT.openRoster = function () {
+ACT.acctPick = function (el) { var f = el.files[0]; el.value = ''; if (f) ACT.openRoster(null, null, f); };
+ACT.openRoster = function (el, ev, initialFile) {
   var o = S.overview;
   var parsed = null;
   var show = function (w, res) {
@@ -2068,6 +2273,7 @@ ACT.openRoster = function () {
     buttons: [{ label: '취소', value: null }, { label: '등록하기', value: true, primary: true }],
     onOpen: function (w) {
       $('#rosterTpl', w).addEventListener('click', function () { ACT.rosterTemplate(); });
+      if (initialFile) setTimeout(function () { fromFile(w, initialFile); }, 0);
       $('#rosterFile', w).addEventListener('change', function (e) { fromFile(w, e.target.files[0]); e.target.value = ''; });
       var dz = $('#rosterDrop', w);
       ['dragenter', 'dragover'].forEach(function (ev) { dz.addEventListener(ev, function (e) { e.preventDefault(); dz.classList.add('over'); }); });
@@ -2374,11 +2580,11 @@ ACT.bulkFile = function (el) {
       // 학번 4자리·5자리, 학번+이름 한 칸, 이름만 — 모두 같은 규칙으로 찾기
       var sidTxt = map.sid != null ? String(r[map.sid] || '') : '', nameTxt = map.name != null ? String(r[map.name] || '') : '';
       var f = AK.findStudent([sidTxt, nameTxt], ix, ['sid', 'name'], false);
-      var st = (f.status === 'ok' || f.status === 'mismatch') ? f.student : null;
+      var st = f.status === 'ok' ? f.student : null;
       var sid = sidTxt.trim();
       var any = draftAreas().some(function (a) { return map['a_' + a.key] != null && String(r[map['a_' + a.key]] || '').trim(); });
       if (!any) return;
-      if (!st) { unknown.push((sid + ' ' + nameTxt).trim()); return; }
+      if (!st) { unknown.push((sid + ' ' + nameTxt).trim() + (f.status === 'mismatch' ? ' (학번·이름이 다른 학생)' : '')); return; }
       seen[st.sid] = 1;
       draftAreas().forEach(function (a) {
         var j = map['a_' + a.key]; if (j == null) return;
@@ -2440,12 +2646,42 @@ function sheetRows(ws) {
   return XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', raw: false, blankrows: false }).map(function (r) { return r.map(function (c) { return AK.normCell(c); }); });
 }
 // 명렬표·일괄입력용: 표 목록
+// 엑셀 파일 읽기 — 한셀(HCell) 등에서 저장해 시트가 비어 보이는 파일은 고쳐서 다시 읽고, 그래도 안 되면 직접 읽음
+function readWorkbook(buf, ext, opts) {
+  if (ext === 'csv' || ext === 'txt' || ext === 'tsv') return Promise.resolve(XLSX.read(decodeText(buf), Object.assign({ type: 'string' }, opts)));
+  var wb = null, err = null;
+  var ok = function (w) { return w && w.SheetNames.length && w.SheetNames.every(function (n) { return w.Sheets[n]; }); };
+  try { wb = XLSX.read(buf, Object.assign({ type: 'array' }, opts)); } catch (e) { err = e; }
+  if (ok(wb) || !/^(xlsx|xlsm)$/.test(ext)) { if (!wb) throw err; return Promise.resolve(wb); }
+  var zip;
+  return loadLib('jszip').then(function () { return JSZip.loadAsync(buf); }).then(function (z) {
+    zip = z;
+    var names = Object.keys(z.files).filter(function (n) { return !z.files[n].dir && /\.(xml|rels)$/i.test(n); });
+    return Promise.all(names.map(function (n) { return z.file(n).async('string').then(function (s) { return [n, s]; }); }));
+  }).then(function (files) {
+    var map = {}; files.forEach(function (f) { map[f[0]] = f[1]; });
+    // ① 확장 표시를 엑셀 기본 형태로 바꿔 다시 읽기
+    var z2 = new JSZip(); Object.keys(zip.files).forEach(function (n) { if (!zip.files[n].dir && map[n] == null) z2.file(n, zip.file(n).async('uint8array')); });
+    files.forEach(function (f) { z2.file(f[0], AK.fixOoxml(f[1])); });
+    return z2.generateAsync({ type: 'uint8array' }).then(function (u8) {
+      var w2 = null; try { w2 = XLSX.read(u8, Object.assign({ type: 'array' }, opts)); } catch (e) { /* 아래에서 직접 읽기 */ }
+      if (ok(w2)) return w2;
+      // ② 직접 읽기
+      var sheets = {}; Object.keys(map).forEach(function (n) { if (/^xl\/worksheets\/[^\/]+\.xml$/i.test(n)) sheets[n] = map[n]; });
+      var got = AK.xlsxFromParts({ workbook: map['xl/workbook.xml'] || '', rels: map['xl/_rels/workbook.xml.rels'] || '', sst: map['xl/sharedStrings.xml'] || '', sheets: sheets }, DOMParser);
+      if (!got.length) throw err || new Error('엑셀 파일의 시트를 읽지 못했습니다. 엑셀에서 [다른 이름으로 저장 → Excel 통합 문서]로 저장해 다시 올려 주세요.');
+      var w3 = { SheetNames: [], Sheets: {} };
+      got.forEach(function (g) { w3.SheetNames.push(g.name); w3.Sheets[g.name] = XLSX.utils.aoa_to_sheet(g.rows); });
+      return w3;
+    });
+  });
+}
+
 function fileToTables(file) {
   var ext = (file.name.split('.').pop() || '').toLowerCase();
   return Promise.all([loadLib('xlsx'), readBuf(file)]).then(function (r) {
-    var buf = r[1], wb;
-    if (ext === 'csv' || ext === 'txt' || ext === 'tsv') wb = XLSX.read(decodeText(buf), { type: 'string', raw: true });
-    else wb = XLSX.read(buf, { type: 'array', cellDates: true });
+    return readWorkbook(r[1], ext, ext === 'csv' || ext === 'txt' || ext === 'tsv' ? { raw: true } : { cellDates: true });
+  }).then(function (wb) {
     return wb.SheetNames.map(function (n) {
       var ws = wb.Sheets[n];
       return XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', raw: true, blankrows: false }).map(function (row) {
@@ -2465,7 +2701,8 @@ function parseActivityFile(file) {
   var one = function (blocks) { return { fileName: name, units: [{ label: '', blocks: blocks }] }; };
   if (ext === 'xlsx' || ext === 'xls' || ext === 'xlsm' || ext === 'csv' || ext === 'tsv') {
     return Promise.all([loadLib('xlsx'), readBuf(file)]).then(function (r) {
-      var wb = (ext === 'csv' || ext === 'tsv') ? XLSX.read(decodeText(r[1]), { type: 'string' }) : XLSX.read(r[1], { type: 'array' });
+      return readWorkbook(r[1], ext, {});
+    }).then(function (wb) {
       return { fileName: name, units: wb.SheetNames.map(function (sn) { return { label: wb.SheetNames.length > 1 ? sn : '', blocks: [{ kind: 'table', rows: sheetRows(wb.Sheets[sn]) }] }; }) };
     });
   }
@@ -2716,7 +2953,7 @@ function candHtml(c) {
       var cmpR = cmpAll && r.sid && r.include ? cmpAll.by[r.sid] : null;
       var cmpB = cmpR ? (cmpR.st === 'new' ? '<span class="badge pri">새로 추가</span>' : cmpR.st === 'changed' ? '<span class="badge warn">내용 변경</span>' : '<span class="badge">변경 없음</span>') : '';
       var who;
-      if (r.status === 'ambiguous') who = '<select class="inp" style="min-width:170px" data-change="rowPick" data-id="' + c.id + '" data-i="' + i + '"><option value="">— 선택 —</option>' + r.options.map(function (sid) { var x = U.ix.bySid[sid]; return '<option value="' + esc(sid) + '"' + (sid === r.sid ? ' selected' : '') + '>' + esc(x.sid + ' ' + x.name) + '</option>'; }).join('') + '</select>';
+      if (r.status === 'ambiguous' || r.status === 'mismatch') who = '<select class="inp" style="min-width:170px" data-change="rowPick" data-id="' + c.id + '" data-i="' + i + '"><option value="">— 누구인지 선택 —</option>' + r.options.map(function (sid) { var x = U.ix.bySid[sid]; return '<option value="' + esc(sid) + '"' + (sid === r.sid ? ' selected' : '') + '>' + esc(x.sid + ' ' + x.name) + '</option>'; }).join('') + '<option value="__find">🔍 다른 학생 직접 찾기</option></select>';
       else if (r.status === 'none' || r.status === 'unknown' || r.status === 'fixed') who = '<input class="inp" style="min-width:150px" list="' + dl + '" placeholder="학번 또는 이름" data-change="rowSet" data-id="' + c.id + '" data-i="' + i + '" value="' + esc(s ? s.sid + ' ' + s.name : '') + '">';
       else who = s ? '<b class="nowrap">' + esc(s.sid) + ' ' + esc(s.name) + '</b><div class="xs muted">' + esc(s.grade + '학년 ' + s.cls + '반 ' + s.num + '번') + '</div>' : '-';
       return '<tr><td class="c"><input type="checkbox" data-change="rowInc" data-id="' + c.id + '" data-i="' + i + '"' + (r.include ? ' checked' : '') + (r.status === 'other' ? ' disabled' : '') + '></td><td>' + who + '</td>'
@@ -2742,14 +2979,25 @@ ACT.candGrade = function (el) {
   c.grades = AK.parseGrades(set.join(','));
 };
 ACT.rowInc = function (el) { cand(el.dataset.id).rows[+el.dataset.i].include = el.checked; };
-ACT.rowPick = function (el) { var r = cand(el.dataset.id).rows[+el.dataset.i]; r.sid = el.value; r.include = !!el.value; render(); };
+ACT.rowPick = function (el) {
+  var r = cand(el.dataset.id).rows[+el.dataset.i], U = S.upload, sc = U.roster.scope;
+  if (el.value === '__find') { r.status = 'none'; r.sid = ''; r.include = false; return render(); }
+  var s = el.value ? U.ix.bySid[el.value] : null;
+  if (s && sc.role === 'teacher' && !(s.grade === sc.grade && s.cls === sc.cls)) { toast('담당 학급 학생만 저장할 수 있습니다.', 'err'); s = null; }
+  r.sid = s ? s.sid : ''; r.include = !!s; render();
+};
 ACT.rowSet = function (el) {
   var c = cand(el.dataset.id), r = c.rows[+el.dataset.i], U = S.upload, sc = U.roster.scope;
-  var v = String(el.value || '').trim(), sid = (v.match(/^\d{4,6}/) || [''])[0];
-  var s = sid ? AK.lookupSid(sid, U.ix) : null;
-  if (!s && v) { var byN = U.ix.byName[AK.normName(v)] || []; if (sc.role === 'teacher') byN = byN.filter(function (x) { return x.grade === sc.grade && x.cls === sc.cls; }); if (byN.length === 1) s = byN[0]; }
-  if (s && sc.role === 'teacher' && !(s.grade === sc.grade && s.cls === sc.cls)) { toast('담당 학급 학생만 저장할 수 있습니다.', 'err'); s = null; }
-  if (s) { r.sid = s.sid; r.status = 'fixed'; r.include = true; } else { if (r.status === 'fixed') r.status = 'none'; r.sid = ''; r.include = false; if (v) toast('명렬표에서 학생을 찾지 못했습니다.', 'err'); }
+  var v = String(el.value || '').trim();
+  // 이름·학번(4·5자리)·"2-3-1"·"2학년 3반 1번"·이름 일부 모두 찾기
+  var all = AK.searchStudents(v, U.ix), found = all;
+  if (sc.role === 'teacher') found = all.filter(function (x) { return x.grade === sc.grade && x.cls === sc.cls; });
+  if (found.length === 1) { r.sid = found[0].sid; r.status = 'fixed'; r.include = true; }
+  else if (found.length > 1) { r.status = 'ambiguous'; r.options = found.slice(0, 30).map(function (x) { return x.sid; }); r.sid = ''; r.include = false; r.hint = '"' + v + '" 검색 결과 ' + found.length + '명'; toast('여러 명이 찾아졌어요. 목록에서 골라 주세요.'); }
+  else {
+    if (r.status === 'fixed') r.status = 'none'; r.sid = ''; r.include = false;
+    if (v) toast(all.length && sc.role === 'teacher' ? '담당 학급 학생이 아닙니다 (' + all.map(function (x) { return x.sid + ' ' + x.name; }).slice(0, 3).join(', ') + ').' : '명렬표에서 학생을 찾지 못했습니다. 명렬표에 없는 학생이면 저장 체크를 빼 두세요.', 'err');
+  }
   render();
 };
 ACT.toggleCol = function (el) {
@@ -2815,7 +3063,18 @@ ACT.saveUpload = function () {
   });
 };
 
+// 끌어다 놓기 칸 밖에 파일을 떨어뜨려도 브라우저가 파일을 열어 버리지 않게
+document.addEventListener('dragover', function (e) { e.preventDefault(); });
+document.addEventListener('drop', function (e) { if (!e.target.closest || !e.target.closest('.drop')) e.preventDefault(); });
+
 function afterRender() {
+  var ad = document.getElementById('acctDrop');
+  if (ad && !ad._bound) {
+    ad._bound = true;
+    ['dragenter', 'dragover'].forEach(function (ev) { ad.addEventListener(ev, function (e) { e.preventDefault(); ad.classList.add('over'); }); });
+    ['dragleave', 'drop'].forEach(function (ev) { ad.addEventListener(ev, function (e) { e.preventDefault(); ad.classList.remove('over'); }); });
+    ad.addEventListener('drop', function (e) { var f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]; if (f) ACT.openRoster(null, null, f); });
+  }
   var dz = document.getElementById('dropzone');
   if (dz && !dz._bound) {
     dz._bound = true;
